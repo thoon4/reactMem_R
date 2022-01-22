@@ -1,0 +1,1953 @@
+---
+title: 'Memory Reactivation & Update'
+author:
+  - name: "Taehoon Kim, Ghootae Kim"
+    affiliation: "Deep Memory Lab, Cognitive Science Research Group, Korea Brain Research Institute"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    code_folding: hide
+    highlight: tango
+    number_sections: true
+    theme: cosmo
+    toc: true
+    toc_depth: 5
+    toc_float:
+      collapse: false
+      smooth_scroll: false
+  pdf_document:
+    toc: true
+    toc_depth: 5
+subtitle: Memory Reactivation & Update
+mainfont: Noto Sans CJK K
+editor_options: 
+  chunk_output_type: console
+---
+
+<br><br>
+
+
+# Outline
+
+<br>
+
+![](/Users/taehoonkim/Desktop/Workspace/git_project/reactMem_R_raw/image/background_1.png)
+<br>
+
+![](/Users/taehoonkim/Desktop/Workspace/git_project/reactMem_R_raw/image/background_2.png)
+
+<br>
+
+![](/Users/taehoonkim/Desktop/Workspace/git_project/reactMem_R_raw/image/background_3.png)
+
+
+<br>
+
+# Results
+
+<br>
+
+```{r, echo=FALSE}
+rm(list=ls())
+# getwd()
+setwd("/Users/taehoonkim/Desktop/Workspace/git_project/reactMem_R_raw/")
+options(scipen=4)
+```
+
+```{css, echo=FALSE}
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+```
+
+
+```{r setup, message=FALSE}
+set.seed(12345) # for reproducibility
+options(knitr.kable.NA = '')
+
+# install // load packages 
+# Some packages need to be loaded. 
+# We use `pacman` as a package manager, which takes care of the other packages. 
+if (!require("distill", quietly = TRUE)) install.packages("distill")
+if (!require("devtools", quietly = TRUE)) install.packages("devtools")
+if (!require("papaja", quietly = TRUE)) devtools::install_github("crsh/papaja")
+if (!require("patchwork", quietly = TRUE)) devtools::install_github("thomasp85/patchwork")
+if (!require("klippy", quietly = TRUE)) devtools::install_github("RLesur/klippy")
+if (!require("pacman", quietly = TRUE)) install.packages("pacman")
+if (!require("Rmisc", quietly = TRUE)) install.packages("Rmisc")
+if (!require("rstatix", quietly = TRUE)) install.packages("rstatix")
+if (!require("effsize", quietly = TRUE)) install.packages("effsize")
+if (!require("lsr", quietly = TRUE)) install.packages("lsr")
+if (!require("effectsize", quietly = TRUE)) install.packages("effectsize")
+if (!require("ggbeeswarm", quietly = TRUE)) install.packages("ggbeeswarm") # Never load it directly.
+pacman::p_load(tidyverse, papaja, knitr, dplyr, car, psych, afex, lme4, lmerTest, 
+               emmeans, ggplot2, ggpubr, lattice, latticeExtra, parallel, effects, psycho, apa)
+library("patchwork"); library("klippy")
+klippy::klippy()
+```
+
+<br>
+
+## Phase 1 - Categorization
+
+<br>
+
+```{r, collapse=TRUE}
+t1 <- read.csv("data/reactMEM_p1_all.csv", header = T)
+glimpse(t1, width = 70)
+length(unique(t1$SN))
+
+# change class of main factors: double to factor
+t1$SN = factor(t1$SN)
+t1$Block = factor(t1$Block)
+t1$cCong = factor(t1$cCong, levels=c(1,2), labels=c("v","nv")) 
+t1$cnRep = factor(t1$cnRep, levels=c(1,2,3,5,4), labels=c(1,2,3,4,0))
+t1$cnPair = factor(t1$cnPair)
+t1$cIdt = factor(t1$cIdt)
+t1$cCat = factor(t1$cCat)
+t1$Im_Name = factor(t1$Im_Name)
+t1$Im_Idx = factor(t1$Im_Idx)
+t1$RT <- t1$RT*1000;
+t1$Corr <- as.numeric(t1$Corr==1)
+
+# check number of trials for each condition/SN
+table(t1$SN)
+table(t1$Block, t1$SN) 
+table(t1$cCong, t1$SN) 
+headTail(t1)
+glimpse(t1, width = 70)
+```
+
+<br>
+
+### RT analysis: General
+
+<br>
+  
+```{r, collapse=TRUE}
+
+## 1.2.1. preprocessing
+# filter null/incorrect data
+ct1 <- t1 %>% filter(Corr == 1) # filter(Corr == 1) # remove incorrect trial
+
+# check accuracy
+100-100*(nrow(ct1)/nrow(t1))
+# 5.76% incorrect trials were not analyzed
+
+# trimming 3sd outlier trials
+# tt1 <- ct1
+tt1 <- ct1 %>% filter(RT > 200 & RT < 10000) %>%
+  group_by(SN) %>% # grouping by participants
+  nest() %>%
+  mutate(lbound = map(data, ~mean(.$RT)-3*sd(.$RT)),
+         ubound = map(data, ~mean(.$RT)+3*sd(.$RT))) %>% # make new data (3sd cut)
+  unnest(c(lbound, ubound))%>%
+  unnest(data) %>%
+  mutate(Outlier = (RT < lbound)|(RT > ubound)) %>% # set outlier
+  filter(Outlier == FALSE) %>% # filtering outlier
+  ungroup() %>%
+  dplyr::select(SN, Block, cCong, cnRep, cnPair, cIdt, cCat, Im_Name, RT, Corr) # select variables to analyze
+
+# outlier trial ratio
+100-100*(nrow(tt1)/nrow(ct1))
+## [1] 1.89857
+
+# RTs were trimmed
+# when 1) faster than 200ms 2) slower than 10 secs 3) 3SD away from the participants mean
+
+# mean number of trials for each conditions
+tt1 %>% group_by(SN, cCong, cnRep) %>% 
+  filter(cnPair == 2) %>% 
+  summarise(NumTrial = length(RT)) %>%
+  ungroup() %>%
+  group_by(cCong, cnRep) %>%
+  summarise(Mean = mean(NumTrial), 
+            Median = median(NumTrial), 
+            Min = min(NumTrial), 
+            Max = max(NumTrial)) %>% 
+  ungroup %>%
+  kable(digits=2)
+
+# check Distribution
+
+# before trimming
+den1 <- ggplot(ct1, aes(x=RT)) + 
+  geom_density() + 
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+
+# after trimming
+den2 <- ggplot(tt1, aes(x=RT)) + 
+  geom_density() + 
+  theme_bw(base_size = 18) + 
+  labs(x = "Trimmed RT") + 
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank()) 
+den1 + den2
+```
+
+<br>
+
+```{r, fig.width= 10, fig.height=5}
+ggplot(data=tt1, aes(x = SN, y = RT)) + 
+  ggtitle("mean RT") +
+  xlab("Participants") + ylab("RT") + theme_bw() +
+  theme(text=element_text(size=14)) +
+  theme(legend.title = element_text(face = 1,size = 15)) +
+  geom_boxplot()
+```
+
+<br>
+
+```{r, collapse=TRUE}
+
+# subject-level, long format
+t1rtL <- tt1 %>% filter(cnPair == 2) %>% group_by(SN, cCong, cnRep) %>%
+  summarise(RT = mean(RT)) %>%
+  ungroup()
+#t1rtL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t1rtW <- t1rtL %>% spread(key=cnRep, value = RT)
+#t1rtW %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t1rtW1 <- t1rtL %>% # filter(cnRep == 4) %>% 
+  spread(key=cCong, value = RT)
+#t1rtW1 %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t1rtG <- t1rtL %>% group_by(cCong, cnRep) %>%
+  summarise(RT.m = mean(RT), RT.sd = sd(RT)) %>%
+  ungroup()
+t1rtG$RT.se <- Rmisc::summarySEwithin(data = t1rtL, measurevar = "RT", 
+                                      idvar = "SN", withinvars = c("cCong", "cnRep"))$se
+t1rtG$RT.ci <- Rmisc::summarySEwithin(data = t1rtL, measurevar = "RT", 
+                                      idvar = "SN", withinvars = c("cCong", "cnRep"))$ci
+t1rtG <- t1rtG %>% 
+  mutate(lower.ci = RT.m-RT.ci,
+         upper.ci = RT.m+RT.ci)
+t1rtG %>% dplyr::select(cCong, cnRep, RT.m) %>% 
+  spread(key=cnRep, value=RT.m) %>% kable(digits=2)
+
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+p1.L.rt.g <- t1rtG %>% filter(cnRep != 0)
+p1.L.rt.g$Cong <- factor(p1.L.rt.g$cCong, labels=c("Violation", "Non-violation"))
+p1.L.rt.g.plot1 <- ggplot(data=p1.L.rt.g , 
+                              aes(x=cnRep, y=RT.m, ymin=RT.m-RT.ci, ymax=RT.m+RT.ci, color=Cong, shape=Cong)) +
+  geom_point(size = 5, position = position_dodge(.3)) +
+  geom_errorbar(width = .2, position = position_dodge(.3)) +
+  geom_line(aes(group = Cong), position = position_dodge(.3), size=1) + 
+  scale_color_manual(values = c("#ED7D31", "#70AD47")) + # c("red", "black")) +
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(500,1000), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  scale_x_discrete(labels = c("1", "2", "3", "4")) +
+  labs(x = "Repetition", y = "Response Time (ms)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+
+p1.L.rt.g <- t1rtG %>% filter(cnRep != 2, cnRep != 3, cnRep != 4)
+p1.L.rt.g$Cong <- factor(p1.L.rt.g$cCong, labels=c("Violation", "Non-violation"))
+p1.L.rt.g.plot2 <- ggplot(data=p1.L.rt.g , 
+                          aes(x=cnRep, y=RT.m, ymin=RT.m-RT.ci, ymax=RT.m+RT.ci, color=Cong, shape=Cong)) +
+  geom_point(size = 5, position = position_dodge(.3)) +
+  geom_errorbar(width = .2, position = position_dodge(.3)) +
+  geom_line(aes(group = Cong), position = position_dodge(.3), size=1) + 
+  scale_color_manual(values = c("#ED7D31", "#70AD47")) + # c("red", "black")) +
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(500,1000), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  scale_x_discrete(labels = c("1st B", "B-Prime")) +
+  labs(x = "Type", y = "Response Time (ms)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+# p1.L.rt.g.plot1
+# p1.L.rt.g.plot2
+
+p1.rt.plot <- ggarrange(p1.L.rt.g.plot1, p1.L.rt.g.plot2, ncol = 2,
+          labels=c("A) Categorization of B", "B) Categorization fo B/B`"))
+p1.rt.plot
+```
+
+<br>
+
+RM ANOVA 1 - 반복에 따른 priming 효과
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1rtL.1 <- t1rtL %>% filter(cnRep != 0)
+t1.rt.aov1 <- aov_ez(id="SN", dv = "RT", data = t1rtL.1, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+# summary(t1.rt.aov1)
+# anova(t1.rt.aov1, es = "pes")
+nice(t1.rt.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM ANOVA 1 - Post-hoc Test
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+### RM ANOVA 1 - post-hoc
+t1.rt.m1 <- emmeans(t1.rt.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.rt.m1$contrasts %>% kable(digits=3)
+plot(t1.rt.m1, horizontal = T, comparisons = T)
+
+
+t1.rt.m2 <- emmeans(t1.rt.aov1, pairwise ~ cnRep | cCong) # adjust="bon" , "tukey"
+t1.rt.m2$contrasts %>% kable(digits=3)
+plot(t1.rt.m2, horizontal = T, comparisons = T)
+```
+
+<br>
+
+RM ANOVA 2 - violation 여부에 따른 priming 효과 감소 (differentiation effect) 
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1rtL.2 <- t1rtL %>% filter(cnRep !=1, cnRep != 2, cnRep !=0)
+t1.rt.aov1 <- aov_ez(id="SN", dv = "RT", data = t1rtL.2, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+#summary(t1.rt.aov1)
+#anova(t1.rt.aov1, es = "pes")
+nice(t1.rt.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM ANOVA 2 - Post-hoc Test
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+### RM ANOVA 2 - post-hoc
+t1.rt.m1 <- emmeans(t1.rt.aov1, pairwise ~ cnRep | cCong) # adjust="bon" , "tukey"
+t1.rt.m1$contrasts %>% kable(digits=3)
+plot(t1.rt.m1, horizontal = FALSE, comparisons = T)
+
+t1.rt.m1 <- emmeans(t1.rt.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.rt.m1$contrasts %>% kable(digits=3)
+plot(t1.rt.m1, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+RM ANOVA 3 - general category priming 효과
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1rtL.3 <- t1rtL %>% filter(cnRep !=2, cnRep !=3, cnRep !=4)
+t1.rt.aov1 <- aov_ez(id="SN", dv = "RT", data = t1rtL.3, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+# summary(t1.rt.aov1)
+# anova(t1.rt.aov1, es = "pes")
+nice(t1.rt.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM ANOVA 3 - Post-hoc Test
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1.rt.m1 <- emmeans(t1.rt.aov1, pairwise ~ cnRep | cCong) # adjust="bon" , "tukey"
+t1.rt.m1$contrasts %>% kable(digits=3)
+plot(t1.rt.m1, horizontal = FALSE, comparisons = T)
+
+t1.rt.m2 <- emmeans(t1.rt.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.rt.m2$contrasts %>% kable(digits=3)
+plot(t1.rt.m2, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+### RT analysis: Priming 
+
+<br>
+
+
+```{r, collapse=TRUE}
+t3.0 <- t1 %>% filter(Corr == 1) 
+
+t3.1 <- t3.0 %>% filter(RT > 200 & RT < 10000) %>%
+  group_by(SN) %>% # grouping by participants
+  nest() %>%
+  mutate(lbound = map(data, ~mean(.$RT)-3*sd(.$RT)),
+         ubound = map(data, ~mean(.$RT)+3*sd(.$RT))) %>% # make new data (3sd cut)
+  unnest(c(lbound, ubound))%>%
+  unnest(data) %>%
+  mutate(Outlier = (RT < lbound)|(RT > ubound)) %>% # set outlier
+  filter(Outlier == FALSE) %>% # filtering outlier
+  ungroup()
+
+# 100-100*(nrow(t3.1)/nrow(t3.0))
+
+t3.1 <- t3.1 %>% filter(cnRep!=0, cnRep!=1, cnRep!=2)
+glimpse(t3.1, width = 50)
+
+t3.2 <- t3.1 %>% filter(cnPair == 2) %>% 
+  dplyr::select(SN, cCong, cnRep, cIdt, Im_Name, RT)
+
+t3.3 <- t3.2 %>% group_by(SN) %>% 
+  spread(key = cnRep, value = RT) %>% ungroup()
+
+t3.4 <- t3.3 %>% group_by(SN, cCong, cIdt) %>% mutate(prime = `4` - `3`) %>% ungroup()
+t3.4 <- na.omit(t3.4)
+glimpse(t3.4)
+
+# subject-level, long format
+t3rtL <- t3.4 %>% group_by(SN, cCong) %>%
+  summarise(prime = mean(prime)) %>%
+  ungroup()
+#t3rtL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t3rtW <- t3rtL %>% spread(key=cCong, value = prime)
+#t3rtW %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t3rtG <- t3rtL %>% group_by(cCong) %>%
+  summarise(prime.m = mean(prime), prime.sd = sd(prime)) %>%
+  ungroup()
+t3rtG$prime.se <- Rmisc::summarySEwithin(data = t3rtL, measurevar = "prime", 
+                                         idvar = "SN", withinvars = c("cCong"))$se
+t3rtG$prime.ci <- Rmisc::summarySEwithin(data = t3rtL, measurevar = "prime", 
+                                         idvar = "SN", withinvars = c("cCong"))$ci
+t3rtG <- t3rtG %>% 
+  mutate(lower.ci = prime.m-prime.ci,
+         upper.ci = prime.m+prime.ci)
+t3rtG %>% kable(digits=2)
+```
+
+<br>
+
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+# plot
+p1.L.rt3.g <- t3rtG
+p1.L.rt3.g$Cong <- factor(p1.L.rt3.g$cCong, labels=c("Violation", "Non-violation"))
+p1.L.rt3.l <- t3rtL
+p1.L.rt3.l$Cong <- factor(p1.L.rt3.l$cCong, labels=c("Violation", "Non-violation"))
+p1.L.rt3.w <- p1.L.rt3.l %>% dplyr::select(SN, Cong, prime) %>% spread(key =Cong, value=prime)
+
+p1.L.rt3.g.plot3 <- ggplot() +
+  geom_hline(yintercept=0, linetype='dashed', color='gray60', alpha =1, size=1) +
+  geom_point(data=p1.L.rt3.l, aes(x=Cong, y=prime), size = 1, position = position_dodge(.8),  color="gray80") +
+  geom_segment(data=p1.L.rt3.w, inherit.aes = FALSE,
+               aes(x=1, y=`Violation`,
+                   xend=2, yend=`Non-violation`),
+               color="gray80") +
+  geom_pointrange(data=p1.L.rt3.g, aes(x = Cong, y=prime.m, ymin = prime.m-prime.ci, ymax = prime.m+prime.ci, color = Cong),
+                  position = position_dodge(0.80), size = 1.5, show.legend = FALSE) +
+  scale_color_manual(values = c("#ED7D31", "#70AD47")) + 
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(-150,+150), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  scale_x_discrete(labels = c("Violation", "Non-violation")) +
+  labs(x = "Type", y = "4th - 3rd (ms)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+
+p1.L.rt3.g.plot3
+
+# p1.rt.plot2 <- ggarrange(p1.L.rt.g.plot1, p1.L.rt.g.plot2,p1.L.rt3.g.plot3, ncol = 3,
+#                          labels=c("A) Categorization of B", "B) Categorization fo B/B`", "C) Differentiation Effect"))
+# p1.rt.plot2
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+p1.L.rt3.g.plot3.sn <- ggplot() +
+  geom_hline(yintercept=0,  color='gray60', alpha =1, size=1) +
+  stat_summary(data=p1.L.rt3.l, aes(x=SN, y=prime, fill=Cong), 
+               fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02) + # , show.legend = FALSE  colour="black", 
+  
+  scale_fill_manual(values = c("#ED7D31", "#70AD47"),
+                    labels = c("Violation", "Non-violation")) + 
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(-120,+120), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  # scale_x_discrete(labels = c("Violation", "Non-violation")) +
+  labs(x = "Type", y = "4th - 3rd (ms)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = 'top', # c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+
+p1.L.rt3.g.plot3.sn
+```
+
+<br>
+
+Paired T-Test 1 - violation 여부에 따른 priming 약화 효과 (differentiation effect)
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t3rtL.1 <- t3rtL
+t3.rt.ttest <- t.test(prime ~ cCong, data=t3rtL.1,
+                      alternative = c("two.sided"),
+                      paired=T, var.equal=F,
+                      conf.level=.95)
+t3.rt.ttest
+```
+
+```{r, echo=T, warning=F, message=F}
+t3.rt.rmanova <- aov_ez(id="SN", dv = "prime", data = t3rtL.1, within = c("cCong"))
+nice(t3.rt.rmanova, es ="pes")
+t3.rt.m1 <- emmeans(t3.rt.rmanova, pairwise ~ cCong, adjust="tukey") # adjust="bon" , "tukey"
+t3.rt.m1$contrasts %>% kable(digits=3)
+plot(t3.rt.m1, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+### RT analysis: Priming with B' RT
+
+<br>
+
+```{r, collapse=TRUE}
+
+t4.0 <- t1 %>% filter(Corr == 1)
+
+t4.1 <- t4.0 %>% filter(RT > 200 & RT < 10000) %>%
+  group_by(SN) %>% # grouping by participants
+  nest() %>%
+  mutate(lbound = map(data, ~mean(.$RT)-3*sd(.$RT)),
+         ubound = map(data, ~mean(.$RT)+3*sd(.$RT))) %>% # make new data (3sd cut)
+  unnest(c(lbound, ubound))%>%
+  unnest(data) %>%
+  mutate(Outlier = (RT < lbound)|(RT > ubound)) %>% # set outlier
+  filter(Outlier == FALSE) %>% # filtering outlier
+  ungroup()
+
+100-100*(nrow(t4.1)/nrow(t4.0))
+
+t4.1 <- t4.1 %>% filter(cnRep!=1, cnRep!=2)
+# t4.1$cnRep <- as.double(t4.1$cnRep)
+t4.2 <- t4.1 %>% filter(cnPair == 2) %>% 
+  dplyr::select(SN, cCong, cnRep, cIdt, Im_Idx, RT)
+
+t4.3 <- t4.2 %>% group_by(SN) %>% 
+  spread(key = cnRep, value = RT) %>% ungroup()
+
+
+t4.4 <- t4.3 %>% group_by(SN, cIdt) %>% mutate(prime = `4` - `3`) %>% ungroup()
+t4.4 <- na.omit(t4.4)
+t4.4 <- t4.4 %>% dplyr::select (SN, cCong, cIdt, Im_Idx, `0`, prime)
+glimpse(t4.4)
+
+# subject-level, long format
+t4rtL <- t4.4 %>% group_by(SN, cCong) %>%
+  summarise(prime = mean(prime), bpr = mean(`0`)) %>%
+  ungroup()
+#t4rtL %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t4rtG <- t4rtL %>% group_by(cCong) %>%
+  summarise(prime.m = mean(prime), prime.sd = sd(prime), bpr.m = mean(bpr), brp.sd =sd(bpr)) %>%
+  ungroup()
+t3rtG %>% kable(digits=2)
+```
+
+<br>
+
+<br>
+
+```{r, echo=T}
+# correlation by Subject
+t4rtL.1 <- t4rtL %>% filter(cCong == 'v')
+cor.test(formula = ~ prime + bpr, data = t4rtL.1,
+         method = "pearson", alternative = "two.sided")
+```
+
+<br>
+
+```{r, collapse=T, echo=F, warning=F, message=F}
+p1.L.rt.corr.plot1 <- ggplot(t4rtL.1, aes(x=bpr, y=prime)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = "B` RT", 
+       y = "4th - 3rd B RT") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.5, 0.5, 0.7, "cm"),
+        legend.key = element_blank())
+```
+
+<br>
+
+```{r, echo=T}
+
+t4rtL.2 <- t4rtL %>% filter(cCong == 'nv')
+cor.test(formula = ~ prime + bpr, data = t4rtL.2,
+         method = "pearson", alternative = "two.sided")
+```
+
+<br>
+
+```{r, collapse=T, echo=F, warning=F, message=F}
+p1.L.rt.corr.plot2 <- ggplot(t4rtL.2, aes(x=bpr, y=prime)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = "B` RT", 
+       y = "4th - 3rd B RT") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.5, 0.5, 0.7, "cm"),
+        legend.key = element_blank())
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+p1.rt.corr.plot1 <- ggarrange(p1.L.rt.corr.plot1, p1.L.rt.corr.plot2, ncol = 2,
+                         labels=c("A) Violation Condition", "B) Non-violation Condition"))
+p1.rt.corr.plot1
+```
+
+<br>
+
+### RT analysis: correlation, aggregation
+
+```{r, echo=T, warning=F, message=F}
+t4.4.1 <- t4.4 %>% filter(cCong =="v")
+cor.test(formula = ~ prime + `0`, data = t4.4.1,
+         method = "pearson", alternative = "two.sided")
+```
+
+```{r, fig.width= 8, fig.height=8}
+ggplot(t4.4.1, aes(x=`0`, y=prime)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = "b` RT", 
+       y = "4th - 3rd B RT") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1)
+```
+
+```{r, echo=T, warning=F, message=F}
+t4.4.2 <- t4.4 %>% filter(cCong =="nv")
+cor.test(formula = ~ prime + `0`, data = t4.4.2,
+         method = "pearson", alternative = "two.sided")
+```
+
+```{r, fig.width= 8, fig.height=8}
+
+ggplot(t4.4.2, aes(x=`0`, y=prime)) +
+  geom_point(size = 4) +
+  geom_smooth(method=lm) +
+  labs(x = "b` RT", 
+       y = "4th - 3rd B RT") +
+  theme_bw(base_size = 18) +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        aspect.ratio = 1)
+```
+
+<br>
+
+### Accuracy analysis
+
+<br>
+
+```{r, collapse=TRUE}
+t1acc.sn <- t1 %>% filter(cnPair == 2) %>% group_by(SN, cCong) %>%
+  dplyr::summarise(Acc = mean(Corr)*100) %>%
+  ungroup() # %>% spread(key=cCong,value=Acc)
+#
+
+```
+
+<br>
+
+```{r, fig.width= 10, fig.height=8}
+ggplot(data=t1acc.sn, aes(x = SN, y = Acc)) + 
+  ggtitle("mean Accuracy") +
+  xlab("Participant") + ylab("Acc") + theme_bw() +
+  theme(text=element_text(size=14)) +
+  theme(legend.title = element_text(face = 1,size = 15)) +
+  geom_boxplot()
+  
+```
+
+<br>
+
+```{r, collapse=TRUE}
+t1accL <- t1 %>% filter(cnPair == 2) %>% 
+  group_by(SN, cCong, cnRep) %>%
+  dplyr::summarise(Acc = mean(Corr)*100) %>%
+  ungroup()
+# t1accL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t1accW1 <- t1accL %>% spread(key=cCong, value = Acc)
+# t1accW1 %>% kable(digits=2)
+
+t1accW2 <- t1accL %>% spread(key=cnRep, value = Acc)
+# t1accW2 %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t1accG <- t1accL %>% group_by(cCong, cnRep) %>%
+  summarise(Acc.m = mean(Acc), Acc.sd = sd(Acc)) %>%
+  ungroup()
+t1accG$Acc.se <- Rmisc::summarySEwithin(data = t1accL, measurevar = "Acc", 
+                                        idvar = "SN", withinvars = c("cCong", "cnRep"))$se
+t1accG$Acc.ci <- Rmisc::summarySEwithin(data = t1accL, measurevar = "Acc", 
+                                        idvar = "SN", withinvars = c("cCong", "cnRep"))$ci
+t1accG <- t1accG %>% 
+  mutate(lower.ci = Acc.m-Acc.ci,
+         upper.ci = Acc.m+Acc.ci)
+t1accG %>% 
+  dplyr::select(cCong, cnRep, Acc.m) %>% 
+  spread(key=cnRep, value= Acc.m) %>% kable(digits=2)
+```
+
+<br
+
+```{r, fig.width= 14, fig.height=8}
+p1.L.acc.g <- t1accG %>% filter(cnRep != 0)
+p1.L.acc.g$Cong <- factor(p1.L.acc.g$cCong, labels=c("Violation", "Non-violation"))
+p1.L.acc.g.plot1 <- ggplot(data=p1.L.acc.g , 
+                           aes(x=cnRep, y=Acc.m, ymin=Acc.m-Acc.ci, ymax=Acc.m+Acc.ci, color=Cong, shape=Cong)) +
+  geom_point(size = 5, position = position_dodge(.3)) +
+  geom_errorbar(width = .2, position = position_dodge(.3)) +
+  geom_line(aes(group = Cong), position = position_dodge(.3), size=1) + 
+  scale_color_manual(values = c("#ED7D31", "#70AD47")) + # c("red", "black")) +
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(80,110), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  scale_x_discrete(labels = c("1", "2", "3", "4")) +
+  labs(x = "Repetition", y = "Accuracy (%)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+
+p1.L.acc.g <- t1accG %>% filter(cnRep != 2, cnRep != 3, cnRep != 4)
+p1.L.acc.g$Cong <- factor(p1.L.acc.g$cCong, labels=c("Violation", "Non-violation"))
+p1.L.acc.g.plot2 <- ggplot(data=p1.L.acc.g , 
+                           aes(x=cnRep, y=Acc.m, ymin=Acc.m-Acc.ci, ymax=Acc.m+Acc.ci, color=Cong, shape=Cong)) +
+  geom_point(size = 5, position = position_dodge(.3)) +
+  geom_errorbar(width = .2, position = position_dodge(.3)) +
+  geom_line(aes(group = Cong), position = position_dodge(.3), size=1) + 
+  scale_color_manual(values = c("#ED7D31", "#70AD47")) + # c("red", "black")) +
+  # scale_shape_manual(values = c("red", "black"), labels = c("Experimental", "Control")) +
+  coord_cartesian(ylim = c(80,110), clip = "on") +
+  # scale_y_continuous(breaks = seq(0,80)) +
+  scale_x_discrete(labels = c("1st B", "B-Prime")) +
+  labs(x = "Type", y = "Accuracy (%)") +
+  theme_bw(base_size = 18) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        legend.position = c(0.65, 0.85),
+        legend.title = element_blank(),
+        # aspect.ratio = 0.6,
+        legend.background = element_blank(),
+        plot.margin = margin(1, 0.3, 0.3, 0.5, "cm"),
+        legend.key = element_blank())
+
+p1.acc.plot <- ggarrange(p1.L.acc.g.plot1, p1.L.acc.g.plot2, ncol = 2,
+                         labels=c("A) Categorization of B", "B) Categorization fo B/B`"))
+p1.acc.plot
+```
+<br>
+
+RM ANOVA
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1accL.1 <- t1accL # %>% filter(SN!=4) 
+t1.acc.aov1 <- aov_ez(id="SN", dv = "Acc", data = t1accL.1, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+#summary(t1.acc.aov1)
+#anova(t1.acc.aov1, es = "pes")
+nice(t1.acc.aov1, es="pes") %>% kable(digits=3)
+
+```
+
+<br>
+
+RM ANOVA 1 - post-hoc
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1.acc.m1 <- emmeans(t1.acc.aov1, pairwise ~ cnRep | cCong) # adjust="bon" , "tukey"
+t1.acc.m1$contrasts %>% kable(digits=3)
+plot(t1.acc.m1, horizontal = FALSE, comparisons = T)
+
+t1.acc.m2 <- emmeans(t1.acc.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.acc.m2$contrasts %>% kable(digits=3)
+plot(t1.acc.m2, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+RM-ANOVA 2
+
+<br>
+
+
+```{r, echo=T, warning=F, message=F}
+t1accL.2 <- t1accL %>% filter(cnRep !=1, cnRep != 2, cnRep !=0)
+t1.acc.aov1 <- aov_ez(id="SN", dv = "Acc", data = t1accL.2, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+# summary(t1.acc.aov1)
+# anova(t1.acc.aov1, es = "pes")
+nice(t1.acc.aov1, es="pes") %>% kable(digits=3)
+
+```
+
+<br>
+
+RM ANOVA 2 - post-hoc
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t1.acc.m1 <- emmeans(t1.acc.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.acc.m1$contrasts %>% kable(digits=3)
+plot(t1.acc.m1, horizontal = FALSE, comparisons = T)
+
+
+t1.acc.m1 <- emmeans(t1.acc.aov1, pairwise ~ cnRep) # adjust="bon" , "tukey"
+t1.acc.m1$contrasts %>% kable(digits=3)
+plot(t1.acc.m1, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+Paired T-Test
+
+<Br>
+
+```{r, echo=T, warning=F, message=F}
+t1accL.3 <- t1accL %>% filter(cnRep == 0)
+t1.acc.ttest <- t.test(Acc ~ cCong, data=t1accL.3,
+                       alternative = c("two.sided"),
+                       paired=T, var.equal=F,
+                       conf.level=.95)
+t1.acc.ttest 
+```
+
+<br>
+
+RM-ANOVA 3
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+
+t1accL.3 <- t1accL %>% filter(cnRep !=2, cnRep !=3, cnRep !=4)
+t1.acc.aov1 <- aov_ez(id="SN", dv = "Acc", data = t1accL.3, within = c("cCong", "cnRep"))
+# test_sphericity(t2.acc.aov1)
+# summary(t1.acc.aov1)
+# anova(t1.acc.aov1, es = "pes")
+nice(t1.acc.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM-ANOVA 3 - post hoc
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+### RM ANOVA 3 - post-hoc
+t1.acc.m1 <- emmeans(t1.acc.aov1, pairwise ~ cnRep | cCong) # adjust="bon" , "tukey"
+t1.acc.m1$contrasts %>% kable(digits=3)
+plot(t1.acc.m1, horizontal = FALSE, comparisons = T)
+
+t1.rt.m2 <- emmeans(t1.rt.aov1, pairwise ~ cCong | cnRep) # adjust="bon" , "tukey"
+t1.rt.m2$contrasts %>% kable(digits=3)
+plot(t1.rt.m2, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+***
+
+<br>
+
+## Phase 2 - Recognition Test
+
+<br>
+
+```{r, collapse=TRUE}
+t2 <- read.csv("data/reactMEM_p2_all.csv", header = T)
+
+glimpse(t2, width = 70)
+
+# ------- Variables ------- #
+# $ SN       <int> 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99…
+# $ Trial    <int> 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15,…
+# $ cType    <int> 1, 1, 1, 2, 2, 1, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1,…
+# $ cCong    <int> 1, 2, 1, 999, 999, 1, 999, 999, 2, 1, 1, 1, 999, 9…
+# $ cIdt     <int> 3, 105, 43, 999, 999, 89, 999, 999, 103, 81, 23, 2…
+# $ cCat     <int> 2, 1, 2, 2, 2, 1, 2, 1, 2, 1, 1, 1, 1, 1, 2, 2, 1,…
+# $ xIm_nExm <int> 2, 2, 2, 999, 999, 2, 999, 999, 2, 2, 2, 2, 999, 9…
+# $ xIm_Idx  <int> 199, 130, 197, 271, 259, 4, 278, 274, 192, 73, 62,…
+# $ dIm_Name <chr> " 199_2_out.jpg", " 130_2_in.jpg", " 197_2_out.jpg…
+# $ Resp     <int> 2, 4, 3, 1, 1, 4, 4, 1, 2, 4, 2, 1, 1, 1, 1, 3, 4,…
+# $ RT       <dbl> 62.2271, 2.4708, 2.2955, 5.4393, 1.4200, 1.1727, 1…
+# $ Corr     <int> 0, 1, 1, 1, 1, 1, 0, 1, 0, 1, 0, 0, 1, 1, 1, 0, 1,…
+# $ Conf     <int> 1, 2, 1, 2, 2, 2, 2, 2, 1, 2, 1, 2, 2, 2, 2, 1, 2,…
+
+length(unique(t2$SN))
+
+# check number of trials for each condition/SN
+table(t2$SN)
+table(t2$cType, t2$SN) 
+table(t2$cCong, t2$SN) 
+# table(t2$cCat, t2$SN) 
+
+# change class of main factors: double to factor
+t2$SN = factor(t2$SN)
+t2$cType = factor(t2$cType, levels=c(1,2), labels=c("old","new"))
+t2$cCong = factor(t2$cCong, levels=c(1,2,999), labels=c("v","nv","new")) 
+t2$cIdt = factor(t2$cIdt)
+# t2$cCat = factor(t2$cCat)
+t2$dIm_Name = factor(t2$dIm_Name)
+t2$Resp <- factor(t2$Resp);
+t2$mResp <- factor(t2$Resp, levels=c(1,2,3,4), labels=c("new", "new", "old", "old"))
+t2$RT <- t2$RT*1000;
+t2$Corr <- as.numeric(t2$Corr==1)
+t2$Conf <- as.double(t2$Conf)
+# t2$Corr[t2$Conf==2] <- 1
+# t2$Corr[t2$cType=="old" & t2$mResp=="old" &  t2$Conf==2] <- 1
+# t2$Corr[t2$cType=="old" & t2$mResp=="old" & t2$Conf==1] <- 0
+
+t2$p_resp = factor(t2$cType, levels=c('old','new'), labels=c("p.old","p.new"))
+t2$r_resp = factor(t2$mResp, levels=c('old','new'), labels=c("r.old", "r.new"))
+
+glimpse(t2)
+```
+
+<br>
+
+### Accuracy Analysis: Raw Data
+
+<br>
+
+```{r, fig.width= 10, fig.height=8}
+t2acc.sn <- t2 %>% group_by(SN, cType, cCong) %>%
+  dplyr::summarise(Acc = mean(Corr)*100) %>%
+  ungroup() %>% spread(key=cType,value=Acc)
+# t2acc.sn %>% kable(digits=2)
+
+t2acc.snL <- t2 %>% 
+  filter(cType=='old') %>%
+  group_by(SN, cCong) %>%
+  dplyr::summarise(Acc = mean(Corr)*100) %>%
+  ungroup()
+#t2acc.snL %>% kable(digits=2)
+
+ggplot(data=t2acc.snL, aes(x = SN, y = Acc)) + 
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02) + # , show.legend = FALSE  colour="black",
+  geom_hline(yintercept=50, linetype='dashed', color='darkred', alpha =1, size=1) +
+  coord_cartesian(ylim = c(0, 100), clip = "on") +
+  ggtitle("mean Accuracy (studied)") +
+  xlab("Participants") + ylab("Acc") + theme_bw() +
+  theme(text=element_text(size=14)) +
+  theme(legend.title = element_text(face = 1,size = 15))
+```
+
+<br>
+
+```{r, collapse=TRUE}
+# subject-level, long format (SN/Btw/Block)
+t2accL <- t2 %>% group_by(SN, cType, cCong) %>%
+  dplyr::summarise(Acc = mean(Corr)*100) %>%
+  ungroup()
+# t2accL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t2accW1 <- t2accL %>% spread(key=cCong, value = Acc)
+# t2accW1 %>% kable(digits=2)
+
+t2accW2 <- t2accL %>% spread(key=cType, value = Acc)
+# t2accW2 %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t2accG <- t2accL %>% group_by(cType, cCong) %>%
+  summarise(Acc.m = mean(Acc), Acc.sd = sd(Acc)) %>%
+  ungroup()
+t2accG$Acc.se <- Rmisc::summarySEwithin(data = t2accL, measurevar = "Acc", 
+                                        idvar = "SN", withinvars = c("cType", "cCong"))$se
+t2accG$Acc.ci <- Rmisc::summarySEwithin(data = t2accL, measurevar = "Acc", 
+                                        idvar = "SN", withinvars = c("cType", "cCong"))$ci
+t2accG <- t2accG %>% 
+  mutate(lower.ci = Acc.m-Acc.ci,
+         upper.ci = Acc.m+Acc.ci)
+# for between-subject design. check help(summarySE)
+t2accG %>% kable(digits=2)
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8, warning=F, message=F}
+t2.plot1 <- ggplot(data=t2accL, aes(x=cType, y=Acc, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02) + # , show.legend = FALSE  colour="black", 
+  geom_point(data=t2accL, aes(x=cType, y=Acc, fill=cCong), 
+             position=position_dodge(width = 0.8), 
+             size=2, show.legend = FALSE, color="gray60") + # , 
+  geom_segment(data=filter(t2accW1, cType == "old"), inherit.aes = FALSE,
+               aes(x=0.8, y=filter(t2accW1, cType == "old")$v,
+                   xend=1.2, yend=filter(t2accW1, cType == "old")$nv),
+               color="gray60") +
+  geom_segment(data=filter(t2accW1, cType == "new"), inherit.aes = FALSE,
+               aes(x=1.8, y=filter(t2accW1, cType == "new")$v,
+                   xend=2.2, yend=filter(t2accW1, cType == "new")$nv),
+               color="gray60") +
+  geom_pointrange(data=t2accG, aes(x = cType, y=Acc.m, ymin = Acc.m-Acc.ci, ymax = Acc.m+Acc.ci),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Studied","Lure")) +
+  scale_fill_manual(values = c("#D2E6BD", "#4AA7B4", "#235796"),# c("#6798D4", "#D87B49", "#4FA77C"), 
+                    labels = c("Violation", "Non-violation", "Lure")) +
+  # scale_fill_manual(values = c("#feb24c", "#91bfdb"), #6798D4 #D87B49 #4FA77C
+                    # labels = c("Violation", "Non-violation")) +
+  coord_cartesian(ylim = c(0, 120), clip = "on") +
+  scale_y_continuous(breaks = c(0,25,50,75,100)) +
+  labs(x = "Stimuli Type", y = "Accuracy (%)", fill ="Violation Condition") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position="top")
+        # legend.position=c(0.8, 0.90))
+t2.plot1
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+t2accL.sn <- t2accL %>% filter(cCong!="new")
+t2.plot1.sn <- ggplot(data=t2accL.sn, aes(x=SN, y=Acc, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02) + # , show.legend = FALSE  colour="black", 
+  # scale_x_discrete(labels=c("Studied","Lure")) +
+  scale_fill_manual(values = c("#D2E6BD", "#4AA7B4"),# c("#6798D4", "#D87B49", "#4FA77C"), 
+                    labels = c("Violation", "Non-violation")) +
+  # scale_fill_manual(values = c("#feb24c", "#91bfdb"), #6798D4 #D87B49 #4FA77C
+  # labels = c("Violation", "Non-violation")) +
+  coord_cartesian(ylim = c(0, 120), clip = "on") +
+  scale_y_continuous(breaks = c(0,25,50,75,100)) +
+  labs(x = "Subject Number", y = "Accuracy (%)", fill ="Violation Condition") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position="top")
+# legend.position=c(0.8, 0.90))
+t2.plot1.sn
+```
+
+
+### Accuracy Analysis: Signal Detection Measure
+
+<br>
+
+```{r, collapse=TRUE}
+t2sdtL.1.1 <- t2 %>% filter(cType=="old") %>% mutate( ) %>% group_by(SN, cCong, p_resp, r_resp) %>%
+  summarise(n = sum(Corr==1 | Corr==0)/60) %>%
+  unite(p_resp.r_resp, c(p_resp,r_resp), sep = "_", remove = TRUE) %>% ungroup() %>%
+  spread(p_resp.r_resp, n)
+t2sdtL.1.1 <- plyr::rename(t2sdtL.1.1, c("p.old_r.new" = "Miss", "p.old_r.old" = "Hit"))
+t2sdtL.1.1 <- t2sdtL.1.1[,c(1, 2, 4, 3)]
+# t2sdtL.1.1 %>% kable(digits=2)
+
+t2sdtL.1.2 <- t2 %>% filter(cType=="new") %>% mutate( ) %>% group_by(SN, cCong, p_resp, r_resp) %>%
+  # summarise(n = sum(Corr==1 | Corr==0)/60) %>%
+  summarise(n = sum(Corr==1 | Corr==0)/120) %>%
+  unite(p_resp.r_resp, c(p_resp,r_resp), sep = "_", remove = TRUE) %>% ungroup() %>%
+  spread(p_resp.r_resp, n)
+t2sdtL.1.2 <- plyr::rename(t2sdtL.1.2, c("p.new_r.new" = "CR", "p.new_r.old" = "FA"))
+t2sdtL.1.2 <- t2sdtL.1.2[,c(1, 2, 4, 3)]
+# t2sdtL.1.2 %>% kable(digits=2)
+
+
+t2sdtL.3 <- merge(t2sdtL.1.1, t2sdtL.1.2, by="SN")
+t2sdtL.3$cCong <- t2sdtL.3$cCong.x
+t2sdtL.3[is.na(t2sdtL.3)] <-0
+t2sdtL.3[,3] <- t2sdtL.3[,3] + 0.05
+t2sdtL.3[,6] <- t2sdtL.3[,6] + 0.05
+t2sdtL.3 <- t2sdtL.3 %>% dplyr::select(SN, cCong, Hit, Miss, FA, CR) %>%
+  group_by(SN, cCong) %>% dplyr::mutate(mPerf = (Hit - FA)) %>% ungroup()
+# t2sdtL.3 %>% kable(digits=2)
+
+indices <- psycho::dprime(t2sdtL.3$Hit, t2sdtL.3$FA, n_targets=1, n_distractors = 1, adjusted=F)
+
+t2sdtL.4 <- cbind(t2sdtL.3, indices)
+# t2sdtL.4 %>% kable(digits=2)
+
+t2sdtL.G <- t2sdtL.4 %>%
+  dplyr::select(SN, cCong, mPerf, Hit, FA, dprime, aprime, beta, c) %>%
+  group_by(cCong) %>%
+  summarise(m.p = mean(mPerf), m.d = mean(dprime), m.a = mean(aprime), m.b = mean(beta), m.c = mean(c)) %>% ungroup()
+t2sdtL.G %>% kable(digits=2)
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+
+# hit - fa
+t2sdtW.1 <- t2sdtL.4 %>% dplyr::select(SN, cCong, mPerf) %>% spread(key= cCong, value=mPerf)
+# t2sdtW.1 %>% kable(digits=2)
+
+t2sdtG.1 <- Rmisc::summarySEwithin(data = t2sdtL.4, measurevar = "mPerf", idvar = "SN", withinvars = c("cCong"))
+# t2sdtG.1 %>% kable(digits=2)
+
+t2.plot2 <- ggplot(data=t2sdtL.4, aes(x=cCong, y=mPerf, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = 1,
+               width = 0.8, show.legend = FALSE) + # , colour="white", size = 1, show.legend = FALSE, colour="black"
+  geom_pointrange(data=t2sdtG.1, aes(x = cCong, y=mPerf, ymin = mPerf-se, ymax = mPerf+se),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) + #"darkblue"
+  geom_segment(data=t2sdtW.1, inherit.aes = FALSE,
+               aes(x=1, y=v,
+                   xend=2, yend=nv),
+               color="gray60") +
+  geom_point(data=t2sdtL.4, position=position_dodge(0.80), color="gray60", size=2, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Violation", "Non-violation")) +
+  scale_fill_manual(values =  c("#feb24c", "#91bfdb")) +
+  coord_cartesian(ylim = c(0, 1), clip = "on") +
+  # scale_y_continuous(breaks = c(0,0.25,0.50,75,100)) +
+  labs(x = "Violation Condition", y = "Hit - FA") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+
+# d prime
+t2sdtW.2 <- t2sdtL.4 %>% dplyr::select(SN, cCong, dprime) %>% spread(key= cCong, value=dprime)
+# t2sdtW.2 %>% kable(digits=2)
+
+t2sdtG.2 <- Rmisc::summarySEwithin(data = t2sdtL.4, measurevar = "dprime", idvar = "SN", withinvars = c("cCong"))
+# t2sdtG.2 %>% kable(digits=2)
+
+t2.plot3 <- ggplot(data=t2sdtL.4, aes(x=cCong, y=dprime, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = 1,
+               width = 0.8, show.legend = FALSE) + # , colour="white", size = 1, show.legend = FALSE, colour="black"
+  geom_pointrange(data=t2sdtG.2, aes(x = cCong, y=dprime, ymin = dprime-se, ymax = dprime+se),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) + #"darkblue"
+  geom_segment(data=t2sdtW.2, inherit.aes = FALSE,
+               aes(x=1, y=v,
+                   xend=2, yend=nv),
+               color="gray60") +
+  geom_point(data=t2sdtL.4, position=position_dodge(0.80), color="gray60", size=2, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Violation", "Non-violation")) +
+  scale_fill_manual(values =  c("#feb24c", "#91bfdb")) +
+  coord_cartesian(ylim = c(0, 4), clip = "on") +
+  # scale_y_continuous(breaks = c(0,0.25,0.50,75,100)) +
+  labs(x = "Violation Condition", y = "d prime") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+# t2.plot3
+t2.plot2.all <-ggarrange(t2.plot2, t2.plot3, ncol = 2)
+t2.plot2.all
+
+```
+
+
+```{r, fig.width= 14, fig.height=8}
+
+# criterion
+t2sdtW.3 <- t2sdtL.4 %>% dplyr::select(SN, cCong, beta) %>% spread(key= cCong, value=beta)
+# t2sdtW.3 %>% kable(digits=2)
+
+t2sdtG.3 <- Rmisc::summarySEwithin(data = t2sdtL.4, measurevar = "beta", idvar = "SN", withinvars = c("cCong"))
+# t2sdtG.3 %>% kable(digits=2)
+
+t2.plot4 <- ggplot(data=t2sdtL.4, aes(x=cCong, y=beta, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = 1,
+               width = 0.8, show.legend = FALSE) + # , colour="white", size = 1, show.legend = FALSE, colour="black"
+  geom_pointrange(data=t2sdtG.3, aes(x = cCong, y=beta, ymin = beta-se, ymax = beta+se),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) + #"darkblue"
+  geom_segment(data=t2sdtW.3, inherit.aes = FALSE,
+               aes(x=1, y=v,
+                   xend=2, yend=nv),
+               color="gray60") +
+  geom_point(data=t2sdtL.4, position=position_dodge(0.80), color="gray60", size=2, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Violation", "Non-violation")) +
+  scale_fill_manual(values =  c("#feb24c", "#91bfdb")) +
+  coord_cartesian(ylim = c(0, 4), clip = "on") +
+  # scale_y_continuous(breaks = c(0,0.25,0.50,75,100)) +
+  labs(x = "Violation Condition", y = "Beta (response bias)") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"),
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+t2.plot4
+```
+
+<br>
+
+
+```{r, echo=T, warning=F, message=F}
+t2accL.1 <- t2sdtL.1.1 # %>% filter(SN!=4) 
+t2.dpr.ttest <- t.test(Hit ~ cCong, data=t2accL.1,
+                      alternative = c("two.sided"),
+                      paired=T, var.equal=F,
+                      conf.level=.95)
+t2.dpr.ttest
+```
+
+<br>
+
+RM-ANOVA 1
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+
+t2accL.1 <- t2sdtL.1.1
+t2.acc.aov1 <- aov_ez(id="SN", dv = "Hit", data = t2accL.1, within = c("cCong"))
+# test_sphericity(t2.acc.aov1)
+# summary(t2.acc.aov1)
+# anova(t2.acc.aov1, es = "pes")
+nice(t2.acc.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM ANOVA 1 - post-hoc
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t2.acc.m1 <- emmeans(t2.acc.aov1, pairwise ~ cCong) # adjust="bon" , "tukey"
+t2.acc.m1$contrasts %>% kable(digits=3)
+plot(t2.acc.m1, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+### RT Analysis
+
+```{r, collapse=TRUE}
+tt2 <- t2 %>% filter(Corr == 1, cType=="old") 
+tt3 <- tt2 %>% filter(RT > 200 & RT < 10000) %>%
+  group_by(SN) %>% # grouping by participants
+  nest() %>%
+  mutate(lbound = map(data, ~mean(.$RT)-3*sd(.$RT)),
+         ubound = map(data, ~mean(.$RT)+3*sd(.$RT))) %>% # make new data (3sd cut)
+  unnest(c(lbound, ubound))%>%
+  unnest(data) %>%
+  mutate(Outlier = (RT < lbound)|(RT > ubound)) %>% # set outlier
+  filter(Outlier == FALSE) %>% # filtering outlier
+  ungroup()
+
+100-100*(nrow(tt3)/nrow(tt2))
+
+# subject-level, long format (SN/Btw/Block)
+t2rtL <- tt2 %>% group_by(SN, cCong) %>%
+  dplyr::summarise(RT = mean(RT)) %>%
+  ungroup()
+# t2rtL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t2rtW1 <- t2rtL %>% spread(key=cCong, value = RT)
+# t2rtW1 %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t2rtG <- t2rtL %>% group_by(cCong) %>%
+  summarise(RT.m = mean(RT), RT.sd = sd(RT)) %>%
+  ungroup()
+t2rtG$RT.se <- Rmisc::summarySEwithin(data = t2rtL, measurevar = "RT", 
+                                        idvar = "SN", withinvars = c("cCong"))$se
+t2rtG$RT.ci <- Rmisc::summarySEwithin(data = t2rtL, measurevar = "RT", 
+                                        idvar = "SN", withinvars = c("cCong"))$ci
+t2rtG <- t2rtG %>% 
+  mutate(lower.ci = RT.m-RT.ci,
+         upper.ci = RT.m+RT.ci)
+# for between-subject design. check help(summarySE)
+t2rtG %>% kable(digits=2)
+
+```
+
+<br>
+
+
+```{r, fig.width= 14, fig.height=8}
+t2.rt.plot1 <- ggplot(data=t2rtL, aes(x=cCong, y=RT, fill=cCong)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02, show.legend = FALSE ) + # , show.legend = FALSE  colour="black", 
+  geom_point(data=t2rtL, aes(x=cCong, y=RT, fill=cCong), 
+             position=position_dodge(width = 0.8), 
+             size=2, show.legend = FALSE, color="gray60") + # , 
+  geom_segment(data=t2rtW1, inherit.aes = FALSE,
+               aes(x=1, y=v,
+                   xend=2, yend=nv),
+               color="gray60") +
+  geom_pointrange(data=t2rtG, aes(x = cCong, y=RT.m, ymin = lower.ci, ymax=upper.ci),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Violation", "Non-violation")) +
+  scale_fill_manual(values = c("#D2E6BD", "#4AA7B4")) +# c("#6798D4", "#D87B49", "#4FA77C"), 
+  # scale_fill_manual(values = c("#feb24c", "#91bfdb"), #6798D4 #D87B49 #4FA77C
+  # labels = c("Violation", "Non-violation")) +
+  coord_cartesian(ylim = c(0, 3000), clip = "on") +
+  # scale_y_continuous(breaks = c(0,25,50,75,100)) +
+  labs(x = "Stimuli Type", y = "Response Time (ms)", fill ="Violation Condition") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position="top")
+# legend.position=c(0.8, 0.90))
+t2.rt.plot1
+```
+
+<br>
+
+Paired T-Test 
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t2.rt.ttest <- t.test(RT ~ cCong, data=t2rtL,
+                       alternative = c("two.sided"),
+                       paired=T, var.equal=F,
+                       conf.level=.95)
+t2.rt.ttest
+
+```
+
+<br>
+  
+***  
+  
+<br>
+  
+## Relating priming effect to memory performance
+
+<Br>
+
+```{r, collapse=TRUE}
+# categorization
+t1 <- read.csv("data/reactMEM_p1_all.csv", header = T)
+t1$SN = factor(t1$SN)
+t1$Block = factor(t1$Block)
+t1$cCong = factor(t1$cCong, levels=c(1,2), labels=c("v","nv")) 
+t1$cnRep = factor(t1$cnRep, levels=c(1,2,3,5,4), labels=c(1,2,3,4,0))
+t1$cnPair = factor(t1$cnPair)
+t1$cIdt = factor(t1$cIdt)
+t1$cCat = factor(t1$cCat)
+t1$Im_Name = factor(t1$Im_Name)
+t1$Im_Idx = factor(t1$Im_Idx)
+t1$RT <- t1$RT*1000;
+t1$Corr <- as.numeric(t1$Corr==1)
+
+# recognition
+t2 <- read.csv("data/reactMEM_p2_all.csv", header = T)
+t2$SN = factor(t2$SN)
+t2$cType = factor(t2$cType, levels=c(1,2), labels=c("old","new"))
+t2$cCong = factor(t2$cCong, levels=c(1,2,999), labels=c("v","nv","new")) 
+t2$cIdt = factor(t2$cIdt)
+t2$dIm_Name = factor(t2$dIm_Name)
+t2$Resp <- factor(t2$Resp);
+t2$mResp <- factor(t2$Resp, levels=c(1,2,3,4), labels=c("new", "new", "old", "old"))
+t2$RT <- t2$RT*1000;
+t2$Corr <- as.numeric(t2$Corr==1)
+t2$Conf <- as.double(t2$Conf)
+t2$p_resp = factor(t2$cType, levels=c('old','new'), labels=c("p.old","p.new"))
+t2$r_resp = factor(t2$mResp, levels=c('old','new'), labels=c("r.old", "r.new"))
+
+# RT preprocessing
+t3.1 <- t1 %>% filter(Corr == 1) %>% # filter(RT > 200 & RT < 10000) %>%
+  group_by(SN) %>% # grouping by participants
+  nest() %>%
+  mutate(lbound = map(data, ~mean(.$RT)-3*sd(.$RT)),
+         ubound = map(data, ~mean(.$RT)+3*sd(.$RT))) %>% # make new data (3sd cut)
+  unnest(c(lbound, ubound))%>%
+  unnest(data) %>%
+  mutate(Outlier = (RT < lbound)|(RT > ubound)) %>% # set outlier
+  filter(Outlier == FALSE) %>% # filtering outlier
+  ungroup()
+t3.1 <- t3.1 %>% filter(cnRep != 1, cnRep != 2)
+t3.2 <- t3.1 %>% filter(cnPair == 2) %>% 
+  select(SN, cCong, cnRep, cIdt, Im_Idx, RT)
+t3.3 <- t3.2 %>% group_by(SN) %>% 
+  spread(key = cnRep, value = RT) %>% ungroup()
+t3.4 <- t3.3 %>% group_by(SN, cIdt) %>% mutate(prime = `4` - `3`)
+
+# Acc preprocessing
+t4.1 <- t2 %>% filter(cType == 'old') %>% 
+  select (SN, cCong, cIdt, dIm_Name, Corr, RT, Conf)
+
+t5 <- merge(t4.1, t3.4, key=c(SN,cCong,cIdt))
+```
+
+<br>
+
+### Logistic Regression
+
+<br>
+
+```{r, warning=F, message=F}
+p1.glm <- t5 #  %>% filter(SN!=4)
+p1.glm <- na.omit(p1.glm)
+table(p1.glm$SN,p1.glm$cCong)
+table(p1.glm$Corr,p1.glm$cCong)
+glimpse(p1.glm, width=70)
+
+```
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+p1.glm.v <- p1.glm %>% filter(cCong == "v")
+p1.glm1 <- glm(Corr ~ prime, data=p1.glm.v, family=binomial()) 
+# summary(p1.glm1)  %>% kable(digits=2)
+# sjPlot::tab_model(p1.glm1)
+
+p1.glm1.2 <- glm(Corr ~ `0`, data=p1.glm.v, family=binomial())
+# summary(p1.glm1.2) # display results
+# anova(p1.glm1.2)
+# sjPlot::tab_model(p1.glm1.2)
+
+p1.glm.v$prime2 <- p1.glm.v$prime^2
+p1.glm1.1 <- glm(Corr ~ prime + prime2, data=p1.glm.v, family=binomial()) 
+# summary(p1.glm1.1) # display results
+# anova(p1.glm1.1)
+# sjPlot::tab_model(p1.glm1.1)
+sjPlot::tab_model(p1.glm1)
+sjPlot::tab_model(p1.glm1.1)
+sjPlot::tab_model(p1.glm1.2)
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+p3_logreg.v <- ggplot(p1.glm.v, aes(x=prime, y=Corr)) + 
+  geom_point(alpha=.5, size=2) +
+  # ggbeeswarm::geom_quasirandom(dodge.width = 1, color = "blue", size = 1, alpha = 0.2,
+                               # show.legend = FALSE) +
+  stat_smooth(method="glm", se=T, method.args = list(family=binomial)) + 
+  labs(x = "Diff Score (final B rt - 3rd B rt)", y = "Correctness") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+# p3_logreg.v
+
+p3_logreg.v.2 <- ggplot(p1.glm.v, aes(x=`0`, y=Corr)) + 
+  geom_point(alpha=.5, size=2) +
+  # ggbeeswarm::geom_quasirandom(dodge.width = 1, color = "blue", size = 1, alpha = 0.2,
+  # show.legend = FALSE) +
+  stat_smooth(method="glm", se=T, method.args = list(family=binomial)) + 
+  labs(x = "B` RT", y = "Correctness") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+
+
+p3_logreg.plot <- ggarrange(p3_logreg.v, p3_logreg.v.2, ncol = 2,
+          labels=c("A) Violation, Prime", "B) Violation, B`"))
+p3_logreg.plot
+
+```
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+p1.glm.nv <- p1.glm %>% filter(cCong == "nv")
+p1.glm.nv <- p1.glm.nv %>% group_by(SN) %>% mutate(prime_z = (prime-mean(prime))/sd(prime)) %>% ungroup()
+
+p1.glm2 <- glm(Corr ~ prime, data=p1.glm.nv, family=binomial()) 
+# summary(p1.glm2) # display results
+# anova(p1.glm2)
+
+p1.glm.nv$prime2 <- p1.glm.nv$prime^2
+p1.glm2.1 <- glm(Corr ~ prime + prime2, data=p1.glm.nv, family=binomial()) 
+# summary(p1.glm2.1) # display results
+# anova(p1.glm2.1)
+
+p1.glm2.2 <- glm(Corr ~ `0`, data=p1.glm.nv, family=binomial())
+# summary(p1.glm2.2) # display results
+# anova(p1.glm2.2)
+
+sjPlot::tab_model(p1.glm2)
+sjPlot::tab_model(p1.glm2.1)
+sjPlot::tab_model(p1.glm2.2)
+
+# hist(residuals(p1.glm1, type="deviance"))
+# qqnorm(residuals(p1.glm1, type="deviance"))
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+# plotting
+newdat.nv <- data.frame(prime=seq(min(p1.glm.nv$prime), max(p1.glm.nv$prime),len=dim(p1.glm.nv)[1]))
+newdat.nv$Corr = predict(p1.glm2, newdata=p1.glm.nv, type="response")
+
+p3_logreg.nv <- ggplot(p1.glm.nv, aes(x=prime, y=Corr)) + 
+  geom_point(alpha=.5, size=2) +
+  # ggbeeswarm::geom_quasirandom(dodge.width = 1, color = "blue", size = 1, alpha = 0.2,
+  # show.legend = FALSE) +
+  stat_smooth(method=glm, se=T, method.args = list(family=binomial)) + 
+  labs(x = "Diff Score (final B rt - 3rd B rt)", y = "Correctness") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  # ggtitle("Non-violation Condition") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+# p3_logreg.nv
+
+p3_logreg.nv.2 <- ggplot(p1.glm.nv, aes(x=`0`, y=Corr)) + 
+  geom_point(alpha=.5, size=2) +
+  # ggbeeswarm::geom_quasirandom(dodge.width = 1, color = "blue", size = 1, alpha = 0.2,
+  # show.legend = FALSE) +
+  stat_smooth(method="glm", se=T, method.args = list(family=binomial)) + 
+  labs(x = "B` RT", y = "Correctness") +
+  scale_y_continuous(breaks = c(0, 0.5, 1)) +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position=c(0.8, 0.85))
+# p3_logreg.nv.2
+
+p3_logreg.plot <- ggarrange(p3_logreg.nv, p3_logreg.nv.2, ncol = 2,
+          labels=c("A) non-Violation, Prime", "B) non-Violation, B`"))
+p3_logreg.plot
+
+```
+
+<br>
+
+### Generalized Linear Mixed Effect Model
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+p1.glm.v <- p1.glm.v %>% group_by(SN) %>% 
+  mutate(prime_z = (prime-mean(prime))/sd(prime)) %>% ungroup()
+
+(nc <- detectCores())
+cl <- makeCluster(rep("localhost", nc))
+p1.glm <- p1.glm %>% group_by(SN) %>%
+  mutate(prime_z_a = (prime-mean(prime))/sd(prime)) %>% ungroup()
+p1.glm.mixed <- afex::mixed(Corr ~  cCong*prime + (1|SN) + (1|Im_Idx),
+                              data = p1.glm,
+                              family = binomial(link="logit"),
+                              method = "LRT", cl = cl,
+                              expand_re = T,
+                              control = lmerControl(optimizer = "bobyqa",
+                                                    optCtrl = list(maxfun = 1e7)))
+
+
+p1.glm.mixed.v <- afex::mixed(Corr ~ prime_z + (1|SN) + (1|Im_Idx),
+                              data = p1.glm.v,
+                              family = binomial(link="logit"),
+                              method = "LRT", cl = cl,
+                              expand_re = T,
+                              control = lmerControl(optimizer = "bobyqa",
+                                                    optCtrl = list(maxfun = 1e7)))
+
+
+p1.glm.mixed.nv <- afex::mixed(Corr ~ prime_z + (1|SN) + (1|Im_Idx),
+                               data = p1.glm.nv,
+                               family = binomial(link="logit"),
+                               method = "LRT", cl = cl,
+                               expand_re = T,
+                               control = lmerControl(optimizer = "bobyqa",
+                                                     optCtrl = list(maxfun = 1e7)))
+stopCluster(cl)
+
+```
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+sjPlot::tab_model(p1.glm.mixed)
+sjPlot::tab_model(p1.glm.mixed.v)
+sjPlot::tab_model(p1.glm.mixed.nv)
+```
+
+<br>
+
+### Binning and ANOVA
+
+<br>
+
+```{r, warning=F, message=F}
+p1.bin <- p1.glm  %>%  group_by(SN, cCong) %>% # grouping by participants
+  mutate(med = median(prime)) %>% # make new data (3sd cut)
+  mutate(prime_bin = (prime >= med)) %>% # set outlier
+  ungroup()
+
+p1.bin$prime_bin <- as.numeric(p1.bin$prime_bin == T)
+p1.bin$prime_bin <- p1.bin$prime_bin+1
+p1.bin$prime_bin <- factor(p1.bin$prime_bin, levels=c(1,2), labels = c("low", "high"))
+glimpse(p1.bin)
+
+# subject-level, long format (SN/Btw/Block)
+t5rtL <- p1.bin %>% group_by(SN, cCong, prime_bin) %>%
+  dplyr::summarise(p2Acc = mean(Corr)*100) %>%
+  ungroup()
+# t5rtL %>% kable(digits=2)
+
+# subject-level, wide format (SN/Btw/Block)
+t5rtW1 <- t5rtL %>% spread(key=prime_bin, value = p2Acc)
+# t5rtW1 %>% kable(digits=2)
+
+# summary table: grand mean (eyerep/locrep)
+t5rtG <- t5rtL %>% group_by(cCong, prime_bin) %>%
+  summarise(p2Acc.m = mean(p2Acc), p2Acc.sd = sd(p2Acc)) %>%
+  ungroup()
+t5rtG$p2Acc.se <- Rmisc::summarySEwithin(data = t5rtL, measurevar = "p2Acc", 
+                                      idvar = "SN", withinvars = c("cCong","prime_bin"))$se
+t5rtG$p2Acc.ci <- Rmisc::summarySEwithin(data = t5rtL, measurevar = "p2Acc", 
+                                      idvar = "SN", withinvars = c("cCong","prime_bin"))$ci
+t5rtG <- t5rtG %>% 
+  mutate(lower.ci = p2Acc.m-p2Acc.ci,
+         upper.ci = p2Acc.m+p2Acc.ci)
+# for between-subject design. check help(summarySE)
+t5rtG %>% kable(digits=2)
+```
+
+<br>
+
+```{r, fig.width= 14, fig.height=8}
+
+t5.plot1 <- ggplot(data=t5rtL, aes(x=cCong, y=p2Acc, fill=prime_bin)) +
+  stat_summary(fun = mean, geom = "bar", position="dodge", na.rm = TRUE, alpha = .9, 
+               width = 0.8,size = 1.02) + # , show.legend = FALSE  colour="black", 
+  geom_point(data=t5rtL, aes(x=cCong, y=p2Acc, fill=prime_bin), 
+             position=position_dodge(width = 0.8), 
+             size=2, show.legend = FALSE, color="gray60") + # , 
+  geom_segment(data=filter(t5rtW1, cCong == "v"), inherit.aes = FALSE,
+               aes(x=0.8, y=filter(t5rtW1, cCong == "v")$low,
+                   xend=1.2, yend=filter(t5rtW1, cCong == "v")$high),
+               color="gray60") +
+  
+  geom_segment(data=filter(t5rtW1, cCong == "nv"), inherit.aes = FALSE,
+               aes(x=1.8, y=filter(t5rtW1, cCong == "nv")$low,
+                   xend=2.2, yend=filter(t5rtW1, cCong == "nv")$high),
+               color="gray60") +
+  
+  geom_pointrange(data=t5rtG, aes(x = cCong, y=p2Acc.m, ymin = lower.ci, ymax = upper.ci),
+                  position = position_dodge(0.80), color = "darkred", size = 1, show.legend = FALSE) +
+  scale_x_discrete(labels=c("Violation","Non-violation")) +
+  scale_fill_manual(values = c("#D2E6BD", "#4AA7B4"),# c("#6798D4", "#D87B49", "#4FA77C"), 
+                    labels = c("Low", "High")) +
+  # scale_fill_manual(values = c("#feb24c", "#91bfdb"), #6798D4 #D87B49 #4FA77C
+  # labels = c("Violation", "Non-violation")) +
+  coord_cartesian(ylim = c(0, 120), clip = "on") +
+  scale_y_continuous(breaks = c(0,25,50,75,100)) +
+  labs(x = "Violation Condition", y = "p2 Recognition Hit (%)", fill ="p1 4th-3rd B rt") +
+  # ggtitle("Association Memory Accuracy") +
+  theme_bw(base_size = 15) +
+  theme(axis.title = element_text(face = "bold", size = 16, color = "black"),
+        axis.text = element_text(face = "plain", hjust = 0.5, size = 15, color = "black"),
+        axis.line=element_line(),
+        strip.text.x = element_text(face = "plain", size = 15, color = "black"),
+        strip.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing=unit(1, "lines"),
+        # aspect.ratio = 0.2,
+        plot.margin = margin(0.3, 0.3, 0.3, 0.3, "cm"), 
+        # plot.title = element_text(hjust = 0.5),
+        legend.position="top")
+# legend.position=c(0.8, 0.90))
+t5.plot1
+```
+
+<br>
+
+RM-ANOVA
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t5.acc.aov1 <- aov_ez(id="SN", dv = "p2Acc", data = t5rtL, within = c("cCong", "prime_bin"))
+# test_sphericity(t2.acc.aov1)
+# summary(t5.acc.aov1)
+# anova(t5.acc.aov1, es = "pes")
+nice(t5.acc.aov1, es="pes") %>% kable(digits=3)
+```
+
+<br>
+
+RM ANOVA - post-hoc
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+
+t5.acc.m1 <- emmeans(t5.acc.aov1, pairwise ~ prime_bin | cCong) # adjust="bon" , "tukey"
+t5.acc.m1$contrasts %>% kable(digits=3)
+plot(t5.acc.m1, horizontal = FALSE, comparisons = T)
+```
+
+<br>
+
+Paired T-Test
+
+<br>
+
+Violation
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t5rtL.v <- t5rtL %>% filter(cCong=="v")
+t5.acc.ttest <- t.test(p2Acc ~ prime_bin, data=t5rtL.v,
+                       alternative = c("two.sided"),
+                       paired=T, var.equal=F,
+                       conf.level=.95)
+t5.acc.ttest
+```
+
+<br>
+
+Non-Violation
+
+<br>
+
+```{r, echo=T, warning=F, message=F}
+t5rtL.nv <- t5rtL %>% filter(cCong=="nv")
+
+t5.acc.ttest <- t.test(p2Acc ~ prime_bin, data=t5rtL.nv,
+                       alternative = c("two.sided"),
+                       paired=T, var.equal=F,
+                       conf.level=.95)
+t5.acc.ttest
+```
